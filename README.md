@@ -12,9 +12,10 @@ ability to run code at design time, while maintaining a declarative syntax.
 A decorator is:
 
 * an expression
-* that evaluates to a function
+* that evaluates to a constructor function
 * that takes the target, name, and property descriptor as arguments
-* and optionally returns a property descriptor to install on the target object
+* that is able to intercept the engine while defining properties
+* and due to its nature of being a constructor function, can make use of inheritance with super calls.
 
 Consider a simple class definition:
 
@@ -40,7 +41,7 @@ A decorator precedes the syntax that defines a property:
 
 ```js
 class Person {
-  @readonly
+  @Readonly
   name() { return `${this.first} ${this.last}` }
 }
 ```
@@ -56,9 +57,11 @@ let descriptor = {
   writable: true
 };
 
-descriptor = readonly(Person.prototype, 'name', descriptor) || descriptor;
+new Readonly(Person.prototype, 'name', descriptor);
 Object.defineProperty(Person.prototype, 'name', descriptor);
 ```
+
+As the object references to the prototype and the descriptor can be directly modified in the decorator constructor, there's no need to create a chain of responsibility. The order of decorator constructor invocations is important.
 
 The decorator has the same signature as `Object.defineProperty`, and has an
 opportunity to intercede before the relevant `defineProperty` actually occurs.
@@ -68,13 +71,12 @@ accessor descriptor:
 
 ```js
 class Person {
-  @nonenumerable
+  @NonEnumerable
   get kidCount() { return this.children.length; }
 }
 
-function nonenumerable(target, name, descriptor) {
+function NonEnumerable(target, name, descriptor) {
   descriptor.enumerable = false;
-  return descriptor;
 }
 ```
 
@@ -83,7 +85,7 @@ accessor.
 
 ```js
 class Person {
-  @memoize
+  @Memoize
   get name() { return `${this.first} ${this.last}` }
   set name(val) {
     let [first, last] = val.split(' ');
@@ -93,7 +95,7 @@ class Person {
 }
 
 let memoized = new WeakMap();
-function memoize(target, name, descriptor) {
+function Memoize(target, name, descriptor) {
   let getter = descriptor.get, setter = descriptor.set;
 
   descriptor.get = function() {
@@ -121,26 +123,23 @@ takes the target constructor.
 
 ```js
 // A simple decorator
-@annotation
+@Annotation
 class MyClass { }
 
-function annotation(target) {
+function Annotation(target) {
    // Add a property on target
    target.annotated = true;
 }
 ```
 
-Since decorators are expressions, decorators can take additional arguments and
-act like a factory.
+Decorators can take arguments that will be available in the Decorator constructor as parameters after the regular `Object.defineProperty` parameters (on object properties) or after the `target` parameter on classes.
 
 ```js
-@isTestable(true)
+@IsTestable(true)
 class MyClass { }
 
-function isTestable(value) {
-   return function decorator(target) {
-      target.isTestable = value;
-   }
+function IsTestable(target, value) {
+  target.isTestable = value;
 }
 ```
 
@@ -148,15 +147,38 @@ The same technique could be used on property decorators:
 
 ```js
 class C {
-  @enumerable(false)
+  @Enumerable(false)
   method() { }
 }
 
-function enumerable(value) {
-  return function (target, key, descriptor) {
-     descriptor.enumerable = value;
-     return descriptor;
+function Enumerable(target, key, descriptor, value) {
+ descriptor.enumerable = value;
+ return descriptor;
+}
+```
+
+As decorators evaluate to a constructor function, inheritance can be used to define complex decoration patterns and gain reusability. As ES6 classes desugar to constuctor functions, it's likely that complex behavior is written as classes.
+
+```js
+class BaseClassAnnotation {
+  constructor(target, ...args) {
+    this.args = args;
+    (target.annotations = target.annotations || []).push(this);
   }
+}
+
+class View extends BaseClassAnnotation {
+  constructor(target, name, template) {
+    super(target, name, template);
+  }
+}
+
+
+@View('sampleView', `
+  <h1>Hello World!</h1>
+`)
+class Component {
+  method() { }
 }
 ```
 
@@ -184,25 +206,21 @@ class Foo {
 ### Desugaring (ES6)
 
 ```js
-var Foo = (function () {
-  class Foo {
-  }
+class Foo {
+}
 
-  Foo = F("color")(Foo = G(Foo) || Foo) || Foo;
-  return Foo;
-})();
+new G(Foo);
+new F(Foo, "color");
 ```
 
 ### Desugaring (ES5)
 
 ```js
-var Foo = (function () {
-  function Foo() {
-  }
+function Foo {
+}
 
-  Foo = F("color")(Foo = G(Foo) || Foo) || Foo;
-  return Foo;
-})();
+new G(Foo);
+new F(Foo, "color");
 ```
 
 ## Class Method Declaration
@@ -220,35 +238,27 @@ class Foo {
 ### Desugaring (ES6)
 
 ```js
-var Foo = (function () {
-  class Foo {
-    bar() { }
-  }
+class Foo {
+  bar() { }
+}
 
-  var _temp;
-  _temp = F("color")(Foo.prototype, "bar",
-    _temp = G(Foo.prototype, "bar",
-      _temp = Object.getOwnPropertyDescriptor(Foo.prototype, "bar")) || _temp) || _temp;
-  if (_temp) Object.defineProperty(Foo.prototype, "bar", _temp);
-  return Foo;
-})();
+var _desc = Object.getOwnPropertyDescriptor(Foo.prototype, "bar");
+new G(Foo.prototype, "bar", _desc);
+new F(Foo.prototype, "bar", _desc, "color");
+Object.defineProperty(Foo.prototype, "bar", _desc);
 ```
 
 ### Desugaring (ES5)
 
 ```js
-var Foo = (function () {
-  function Foo() {
-  }
-  Foo.prototype.bar = function () { }
+function Foo {
+  bar() { }
+}
 
-  var _temp;
-  _temp = F("color")(Foo.prototype, "bar",
-    _temp = G(Foo.prototype, "bar",
-      _temp = Object.getOwnPropertyDescriptor(Foo.prototype, "bar")) || _temp) || _temp;
-  if (_temp) Object.defineProperty(Foo.prototype, "bar", _temp);
-  return Foo;
-})();
+var _desc = Object.getOwnPropertyDescriptor(Foo.prototype, "bar");
+new G(Foo.prototype, "bar", _desc);
+new F(Foo.prototype, "bar", _desc, "color");
+Object.defineProperty(Foo.prototype, "bar", _desc);
 ```
 
 ## Class Accessor Declaration
@@ -267,41 +277,35 @@ class Foo {
 ### Desugaring (ES6)
 
 ```js
-var Foo = (function () {
-  class Foo {
-    get bar() { }
-    set bar(value) { }
-  }
+class Foo {
+  get bar() { }
+  set bar(value) { }
+}
 
-  var _temp;
-  _temp = F("color")(Foo.prototype, "bar",
-    _temp = G(Foo.prototype, "bar",
-      _temp = Object.getOwnPropertyDescriptor(Foo.prototype, "bar")) || _temp) || _temp;
-  if (_temp) Object.defineProperty(Foo.prototype, "bar", _temp);
-  return Foo;
-})();
+var _desc = Object.getOwnPropertyDescriptor(Foo.prototype, "bar");
+new G(Foo.prototype, "bar", _desc);
+new F(Foo.prototype, "bar", _desc, "color");
+Object.defineProperty(Foo.prototype, "bar", _desc);
 ```
 
 ### Desugaring (ES5)
 
 ```js
-var Foo = (function () {
-  function Foo() {
-  }
-  Object.defineProperty(Foo.prototype, "bar", {
-    get: function () { },
-    set: function (value) { },
-    enumerable: true, configurable: true
-  });
+function Foo() {
+}
+Object.defineProperty(Foo.prototype, "bar", {
+  get: function () { },
+  set: function (value) { },
+  enumerable: true, configurable: true
+});
 
-  var _temp;
-  _temp = F("color")(Foo.prototype, "bar",
-    _temp = G(Foo.prototype, "bar",
-      _temp = Object.getOwnPropertyDescriptor(Foo.prototype, "bar")) || _temp) || _temp;
-  if (_temp) Object.defineProperty(Foo.prototype, "bar", _temp);
-  return Foo;
-})();
+var _desc = Object.getOwnPropertyDescriptor(Foo.prototype, "bar");
+new G(Foo.prototype, "bar", _desc);
+new F(Foo.prototype, "bar", _desc, "color");
+Object.defineProperty(Foo.prototype, "bar", _desc);
 ```
+
+## TODO: FOLLOWING TOPICS HAVE NOT BEEN CHANGED YET
 
 ## Object Literal Method Declaration
 
